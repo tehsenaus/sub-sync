@@ -1,0 +1,19 @@
+{
+  "name": "sub-sync",
+  "version": "0.0.1",
+  "main": "dist/subSync.js",
+  "authors": [
+    "Sean Micklethwaite"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/tehsenaus/sub-sync",
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "test",
+    "tests",
+    "lib",
+    "build"
+  ]
+}
