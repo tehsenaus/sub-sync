@@ -15,5 +15,11 @@
     "tests",
     "lib",
     "build"
-  ]
+  ],
+  "dependencies": {
+    "coop": "*"
+  },
+  "amd-dist": {
+    "global": "subSync"
+  }
 }
