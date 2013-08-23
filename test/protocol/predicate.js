@@ -69,6 +69,12 @@ function testOn(p, predicates) {
 				pi.matches(nm).should.be.ok;
 			})
 		})
+
+		describe('#toString()', function () {
+			it('returns a string', function () {
+				p.toString().should.be.a('string')
+			})
+		})
 	});
 }
 module.exports.testOn = testOn;

@@ -3,13 +3,14 @@ var should = require("should");
 var implementsPredicateProtocol = require("./predicate");
 var Extractor = require("../../lib/extractor");
 var Filter = require("../../lib/filter");
+var SubscriptionSpec = require("../../lib/subscriptionSpec");
 
 // For testing implementations of the SubscriptionSpec protocol
 
 module.exports = function (SubscriptionSpecImpl, factory) {
 
 	var f = new Filter.filters.eq("x", "y"),
-		ss = factory(f),
+		ss = factory(f, null),
 		sse = factory(new Filter.filters.eq("x", "y")),
 		fd = new Filter.filters.eq("x", "z"),
 		ssd = factory(fd),
@@ -52,6 +53,25 @@ module.exports = function (SubscriptionSpecImpl, factory) {
 			})
 		});
 
+		describe('#withFilter()', function () {
+			it('returns an intersection of both sets', function () {
+				var and = ss.withFilter(ssd);
+				and.includedIn(ss);
+				and.includedIn(ssd);
+			})
+		});
+
+		describe('#toJSON()', function () {
+			it('produces JSON representation', function () {
+				JSON.stringify(ss.toJSON()).should.be.a('string')
+			})
+		});
+
+		describe('#fromJSON()', function () {
+			it('deserializes to equal value', function () {
+				SubscriptionSpec.fromJSON(null, ss.toJSON()).equals(ss).should.be.true
+			})
+		});
 	});
 }
 

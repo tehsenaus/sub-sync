@@ -91,6 +91,9 @@ define('lib/filter',['coop', './extractor'], function (coop, Extractor) {
         },
 
         // Set inclusion checks
+        equals: function (other) {
+            return this.includes(other) && this.includedIn(other);
+        },
         includes: function (other, converse) {
             if ( this._includes && other.__isFilter ) {
                 if ( this.key !== other.key ) {
@@ -126,6 +129,17 @@ define('lib/filter',['coop', './extractor'], function (coop, Extractor) {
         }
     });
 
+    Filter.filters = {};
+    Filter.fromJSON = function (json) {
+        if ( json instanceof Array ) {
+            for ( var n in Filter.filters ) {
+                if ( json[1] == n && Filter.filters.hasOwnProperty(n) ) {
+                    return new Filter.filters[n](json[0], json[2]);
+                }
+            }
+        }
+    }
+
     Filter.Inverse = Filter.derived({
         isInverse: true,
 
@@ -138,7 +152,7 @@ define('lib/filter',['coop', './extractor'], function (coop, Extractor) {
         }
     });
 
-    Filter.filters = {};
+    
     Filter.define = function (name, predicate, includes, includedIn, inverseName) {
         inverseName = inverseName || 'n' + name;
 
@@ -287,6 +301,10 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
             this.spec = spec;
         },
 
+        equals: function (other) {
+            return this.includes(other) && this.includedIn(other);
+        },
+
         all: function () {
             return this;
         },
@@ -324,6 +342,23 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
         }
     });
 
+    SubscriptionSpec.fromJSONHandlers = [];
+    SubscriptionSpec.fromJSON = function (resource, json) {
+        var result = Filter.fromJSON(json);
+        if ( result ) {
+            return new SubscriptionSpec.Filters(resource, [result]);
+        }
+
+        for ( var i = 0; i < this.fromJSONHandlers.length; i++ ) {
+            result = this.fromJSONHandlers[i](resource, json);
+            if ( result ) {
+                return result;
+            }
+        }
+
+        throw new Error("Failed to parse SubscriptionSpec - no handler found: " + JSON.stringify(json));
+    }
+
     SubscriptionSpec.Disjunction = new coop.Class([SubscriptionSpec], {
         or: function (alternative) {
             return this.union(alternative(this.resource));
@@ -350,8 +385,8 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
 
         withFilter: function (filter) {
             return new SubscriptionSpec.Disjunction(this.resource, this.spec.map(function (alt) {
-                return alt.withFilter(filter);
-            }));
+                return alt.withFilter(filter, this.resource);
+            }, this));
         },
 
         inverse: function () {
@@ -409,6 +444,13 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
         });
         return filter;
     }
+    SubscriptionSpec.fromJSONHandlers.push(function (resource, json) {
+        if ( json.any ) {
+            return new SubscriptionSpec.Disjunction(resource, json.any.map(function (filter) {
+                return SubscriptionSpec.fromJSON(resource, filter);
+            }));
+        }
+    })
 
     SubscriptionSpec.Filters = new coop.Class([SubscriptionSpec], {
         matches: function (item) {
@@ -467,6 +509,24 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
             }
         }
     });
+    SubscriptionSpec.fromJSONHandlers.push(function (resource, json) {
+        if ( json.all ) {
+            return new SubscriptionSpec.Filters(resource, json.all.map(function (filter) {
+                return SubscriptionSpec.fromJSON(resource, filter);
+            }));
+        }
+    })
+
+
+    Filter.implement({
+        withFilter: function (filter, resource) {
+            if ( resource === undefined ) {
+                throw Error("Filter.withFilter: Resource not defined");
+            }
+
+            return new SubscriptionSpec.Filters(resource, [this, filter]);
+        }
+    })
     
 
     SubscriptionSpec.Decorator = SubscriptionSpec.derived({
@@ -479,7 +539,7 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
         },
 
         withFilter: function (filter) {
-            return this.decorate(this.spec.withFilter(other))
+            return this.decorate(this.spec.withFilter(filter))
         },
 
         inverse: function () {
@@ -526,6 +586,8 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
         },
 
         initialize: function (options) {
+            var me = this;
+
             this.super.apply(this, arguments);
 
             this.subscription = new SubscriptionSpec.Disjunction(this, []);
@@ -536,6 +598,11 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
             Resource.listeners.forEach(function (listener) {
                 listener(this);
             }, this);
+
+            var id = this.options.id;
+            this.id = typeof id == 'function' ? id : function (item) {
+                return item[id];
+            }
         },
 
         all: function () {
@@ -567,25 +634,22 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
         },
 
         getAll: function () {
-            this.rev();
             return Object.keys(this.objects).map(function (id) {
                 return this.objects[id];
             }, this);
         },
         get: function (id) {
             if ( id in this.objects ) {
-                this.remRev();
                 return this.objects[id];
             } else {
-                this.addRev();
                 return null;
             }
         },
         setAll: function (data) {
-            var numAdded = 0, numRemoved = 0, numChanged = 0;
+            var numAdded = 0, numRemoved = 0, numChanged = 0, numUpdated = 0;
 
             data.forEach(function (item) {
-                var id = this.options.id.call(this, item);
+                var id = this.id(item);
                 if ( id in this.objects ) {
                     var object = this.objects[id],
                         newObject = this.options.update.call(this, object, item);
@@ -593,6 +657,8 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
                     if ( object !== newObject ) {
                         this.objects[id] = newObject;
                         numChanged++;
+                    } else {
+                        numUpdated++;
                     }
                 } else {
                     this.objects[id] = this.options.ctor.call(this, item);
@@ -615,6 +681,13 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
                     listener.onObjectsRemoved()
                 })
             }
+
+            return {
+                numAdded: numAdded,
+                numChanged: numChanged,
+                numRemoved: numRemoved,
+                numUpdated: numUpdated
+            }
         },
 
         withFilter: function (filter) {
@@ -624,6 +697,7 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
         }
     });
     Resource.listeners = [];
+
 
     return Resource;
 });
@@ -642,6 +716,13 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
 			return va < vb ? -1 : va > vb ? 1 : 0;
 		}
 	})
+	Sort.fromJSONHandlers = [];
+	Sort.fromJSON = function (json) {
+		for ( var i = 0; i < this.fromJSONHandlers.length; i++ ) {
+			var result = this.fromJSONHandlers[i](json);
+			if ( result ) return result;
+		}
+	}
 
 	Sort.ByCol = Sort.derived({
 		initialize: function (col) {
@@ -691,6 +772,21 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
 		}
 	})
 
+	// Parser
+	SubscriptionSpec.fromJSONHandlers.push(function (resource, json) {
+        if ( json.sort ) {
+        	var sort = Sort.fromJSON(json.sort),
+        		values = SubscriptionSpec.fromJSON(resource, json.values);
+
+        	if ( !sort ) {
+        		console.log("Sort not supported:", json.sort);
+        		return values;
+        	}
+
+            return new Sort.SortedSubscription(sort, resource, values);
+        }
+    })
+
 	SubscriptionSpec.implement({
 		sort: function (sort) {
 			if ( !Sort.isinstance(sort) ) {
@@ -707,14 +803,127 @@ function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
 ;
 
 
-define('sub-sync',['./lib/resource', './lib/filter', './lib/subscribable', './lib/subscriptionSpec', './lib/sort'],
-function (Resource, Filter, Subscribable, SubscriptionSpec, Sort) {
+
+
+define('lib/paginator',['coop', './subscribable', './filter', './subscriptionSpec'],
+function (coop, Subscribable, Filter, SubscriptionSpec) {
+
+	var Paginator = new coop.Class({
+		initialize: function (start, end) {
+			this.start = start;
+			this.end = end;
+		},
+		paginate: function (values) {
+			return values.slice(this.start, this.end);
+		},
+
+		includes: function (paginator) {
+			return this.start >= paginator.start && this.end >= paginator.end;
+		},
+		includedIn: function (paginator) {
+			return paginator.includes(this, true);
+		},
+
+		toJSON: function () {
+			return {
+				start: this.start, end: this.end
+			}
+		}
+	});
+	Paginator.fromJSON = function (json) {
+		if ( 'start' in json && 'end' in json ) {
+			return new Paginator(json.start, json.end);
+		}
+	}
+
+	Paginator.PaginatedSubscription = SubscriptionSpec.Decorator.derived({
+		initialize: function (paginator, resource, spec) {
+			this.super_co(arguments, 1);
+
+			this.paginator = paginator;
+		},
+
+		getAll: function () {
+			return this.paginator.paginate(this.spec.getAll());
+		},
+
+		toJSON: function () {
+			return {
+				paginate: this.paginator.toJSON(),
+				values: this.spec.toJSON()
+			}
+		},
+
+		includes: function (other, converse) {
+			if ( Paginator.PaginatedSubscription.isinstance(other) ) {
+				// Comparing two pages. Underlying set must be the same.
+				return this.spec.equals(other.spec) && this.paginator.includes(other.paginator);
+			}
+
+			if (!converse)
+				return other.includedIn(this, true);
+		},
+		includedIn: function (other, converse) {
+			if ( Paginator.PaginatedSubscription.isinstance(other) ) {
+				// Comparing two pages. Underlying set must be the same.
+				return this.spec.equals(other.spec) && this.paginator.includedIn(other.paginator);
+			} else if ( this.spec.includedIn(other) ) {
+				// If this is a page onto a subset of the other, then we are a subset too.
+				return true;
+			}
+
+			if (!converse)
+				return other.includes(this, true);	
+		},
+
+		decorate: function (spec) {
+			return new Paginator.PaginatedSubscription(this.paginator, this.resource, spec);
+		},
+
+		toString: function () {
+			return "{ " + this.spec.toString() + " }[" + this.paginator.toString() + "]"
+		}
+	})
+
+	// Parser
+	SubscriptionSpec.fromJSONHandlers.push(function (resource, json) {
+        if ( json.paginate ) {
+        	var paginate = Paginator.fromJSON(json.paginate),
+        		values = SubscriptionSpec.fromJSON(resource, json.values);
+
+        	if ( !paginate ) {
+        		console.log("Paginator not supported:", json.paginate);
+        		return values;
+        	}
+
+            return new Paginator.PaginatedSubscription(paginate, resource, values);
+        }
+    })
+
+	SubscriptionSpec.implement({
+		slice: function (start, end) {
+			var paginator = new Paginator(start, end);
+			var spec = this;
+
+			return new Paginator.PaginatedSubscription(paginator, this.resource, spec);
+		}
+	})
+
+	return Paginator;
+})
+;
+
+
+define('sub-sync',['./lib/resource', './lib/filter', './lib/subscribable',
+	'./lib/subscriptionSpec', './lib/sort', './lib/paginator'],
+function (Resource, Filter, Subscribable, SubscriptionSpec, Sort, Paginator) {
 	return {
 		Filter: Filter,
 		Subscribable: Subscribable,
 		SubscriptionSpec: SubscriptionSpec,
 		Resource: Resource,
-		Sort: Sort
+		Sort: Sort,
+		Paginator: Paginator
 	}
 });
 	
