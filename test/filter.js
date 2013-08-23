@@ -1,4 +1,6 @@
-var should = require("should")
+var should = require("should"),
+	implementsPredicateProtocol = require("./protocol/predicate"),
+	itIncludes = implementsPredicateProtocol.itIncludes;
 
 var Filter = require("../lib/filter");
 
@@ -6,30 +8,46 @@ describe('Filter', function() {
 
 	var f = new Filter.filters['eq']('x', 'y');
 	
-	describe('eq', function(){
-		var f2 = new Filter.filters['eq']('x', 'y');
-		var f3 = new Filter.filters['eq']('x', 'z')
-		var fy = new Filter.filters['eq']('y', 'y')
+	implementsPredicateProtocol(function (filter) {
+		return filter;
+	});
 
-		itIncludes( function(includes){
-
-		    it('should match on equal keys and values', function(){
-				includes(f,f2).should.equal(true);
-		    })
-
-		    it('should return false on unequal values', function(){
-				includes(f,f3).should.equal(false);
-		    })
-
-		    it('should return Filter.UNKNOWN on unequal keys', function(){
-				should.strictEqual(includes(f,fy), Filter.UNKNOWN);
-		    })
-
-		    it('should return Filter.UNKNOWN on unequal keys', function(){
-				should.strictEqual(includes(f,fy), Filter.UNKNOWN);
-		    })
+	describe('#valueFrom', function(){
+		it('should select property from object', function () {
+			f.valueFrom({ x: 123 }).should.equal(123);
 		})
-	    
+	});
+
+	describe('#valueFrom', function(){
+		it('should use custom extractor', function () {
+			f.valueFrom({ x: 1 }, {
+				extract: function (key, item) {
+					return item[key] * 10;
+				}
+			}).should.equal(10);
+		})
+	});
+
+	describe('#matches', function(){
+		it('should use custom extractor', function () {
+			f.matches({ x: 1 }, {
+				extract: function (key, item) {
+					return 'y'
+				}
+			}).should.be.true;
+		})
+	});
+
+	describe('eq', function(){
+		var fSame = new Filter.filters['eq']('x', 'y');
+		var fDisjoint = new Filter.filters['eq']('x', 'z')
+		var fUnrelated = new Filter.filters['eq']('y', 'y')
+
+		implementsPredicateProtocol.testOn(f, {
+			same: fSame,
+			disjoint: fDisjoint,
+			unrelated: fUnrelated
+		});    
 	})
 
 
@@ -39,11 +57,12 @@ describe('Filter', function() {
 	  	var f2 = new Filter.filters['eq']('x', 'y')
 		var f3 = new Filter.filters['eq']('x', 'z')
 
-	    itIncludes( function(includes){
+		implementsPredicateProtocol.testOn(fi, {
+			same: f2.inverse(),
+			disjoint: f2
+		});
 
-	    	it('should not include same key', function(){
-				includes(fi,f2).should.equal(false);
-		    })
+	    itIncludes( function(includes){
 
 		    it('should include different key', function(){
 				includes(fi,f3).should.equal(true);
@@ -51,6 +70,24 @@ describe('Filter', function() {
 
 		})
 	    
+	})
+
+
+	var fin = new Filter.filters['in']('x', ['x','y']);
+	describe('in', function(){
+		implementsPredicateProtocol.testOn(fin, {
+			same: new Filter.filters['in']('x', ['x','y']),
+			disjoint: new Filter.filters['in']('x', ['z']),
+			unrelated: new Filter.filters['in']('y', ['x','y']),
+			shouldMatch: {'x': 'y'},
+			shouldNotMatch: {'x': 'z'}
+		});
+
+		itIncludes(function (includes) {
+			it('should include eq on one of its values', function(){
+				includes(fin,f).should.equal(true);
+		    })
+		})
 	})
 
 
@@ -150,17 +187,32 @@ describe('Filter', function() {
 });
 
 
-function itIncludes(fn) {
-	describe('#includes()', function () {
-		fn(function (a, b) {
-			return a.includes(b)
-		});
-	});
+describe('Filter.Filterable', function() {
+	var f = new (Filter.Filterable.derived({
+		withFilter: function (filter) {
+			return filter;
+		}
+	}))();
 
-	describe('#includedIn()', function () {
-		fn(function (a, b) {
-			return b.includedIn(a)
-		});
-	});
-}
+	describe('#filter()', function () {
+		it('should default to eq', function(){
+			var filter = f.filter('x', 'y');
+			filter.name.should.equal('eq');
+			filter.key.should.equal('x');
+			filter.value.should.equal('y');
+	    })
 
+	    it('should take custom operators', function(){
+			var filter = f.filter('x', 'in', ['y']);
+			filter.name.should.equal('in');
+			filter.key.should.equal('x');
+			filter.value.should.eql(['y']);
+	    })
+
+	    it('should throw on invalid operator', function(){
+	    	(function(){
+				f.filter('x', 'inxxxx', ['y']);
+			}).should.throw(/^Unknown operator/);
+	    })
+	});
+});

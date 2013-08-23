@@ -58,20 +58,66 @@ define('lib/subscribable',['coop'], function (coop) {
 
 
 
+define('lib/extractor',['coop'], function (coop) {
 
-define('lib/filter',['coop'], function (coop) {
+	var Extractor = new coop.Class({
+		extract: function (key, item) {
+			return item[key];
+		}
+	});
 
-    var Filter = new coop.Class({
+	return Extractor;
+});
+
+
+
+
+define('lib/filter',['coop', './extractor'], function (coop, Extractor) {
+
+    var Filter = new coop.Class([Extractor], {
+        __isFilter: true,
+
         initialize: function (key, value) {
             this.key = key;
             this.value = value;
         },
-        valueFrom: function (item) {
-            return item[this.key];
-        },
+
         inverse: function () {
             return new Filter.filters[this.inverseName](this.key, this.value)
         },
+
+        valueFrom: function (item, extractor) {
+            return (extractor || this).extract(this.key, item);
+        },
+
+        // Set inclusion checks
+        includes: function (other, converse) {
+            if ( this._includes && other.__isFilter ) {
+                if ( this.key !== other.key ) {
+                    return Filter.UNKNOWN;
+                }
+
+                var r = this._includes(other);
+                if ( r || r === false ) return r;
+            }
+
+            if (!converse)
+                return other.includedIn(this, true);
+        },
+        includedIn: function (other, converse) {
+            if ( this._includedIn && other.__isFilter ) {
+                if ( this.key !== other.key ) {
+                    return Filter.UNKNOWN;
+                }
+
+                var r = this._includedIn(other);
+                if ( r || r === false ) return r;
+            }
+
+            if (!converse)
+                return other.includes(this, true);
+        },
+
         toJSON: function () {
             return [ this.key, this.name, this.value ];
         },
@@ -79,40 +125,137 @@ define('lib/filter',['coop'], function (coop) {
             return this.key + ' ' + this.name + ' ' + this.value;
         }
     });
+
+    Filter.Inverse = Filter.derived({
+        isInverse: true,
+
+        // Set inclusion - always check from non-inverted form
+        _includes: function (other) {
+            return this.inverse()._includedIn(other.inverse())
+        },
+        _includedIn: function (other) {
+            return this.inverse()._includes(other.inverse())
+        }
+    });
+
     Filter.filters = {};
-    Filter.define = function (name, predicate, inverseName) {
+    Filter.define = function (name, predicate, includes, includedIn, inverseName) {
         inverseName = inverseName || 'n' + name;
+
         this.filters[name] = Filter.derived({
             name: name,
             inverseName: inverseName,
-            matches: function (item) {
-                return predicate(this.valueFrom(item), this.value, this.key);
-            }
+            matches: function (item, extractor) {
+                return predicate(this.valueFrom(item, extractor), this.value, this.key);
+            },
+            _includes: includes,
+            _includedIn: includedIn
         })
-        this.filters[inverseName] = Filter.derived({
+        this.filters[inverseName] = Filter.Inverse.derived({
             name: inverseName,
             inverseName: name,
-            matches: function (item) {
-                return !predicate(this.valueFrom(item), this.value, this.key);
+            matches: function (item, extractor) {
+                return !predicate(this.valueFrom(item, extractor), this.value, this.key);
             }
         })
     }
 
-    Filter.define('eq', function (value, expected) {
+    function isEqual(value, expected) {
         return value == expected;
+    }
+    function isSameEquality(other) {
+        if ( other.name == 'eq' ) {
+            return isEqual(this.value, other.value);
+        } else if ( other.name == 'neq' ) {
+            return false;
+        }
+    }
+    Filter.define('eq', isEqual, isSameEquality, function (other) {
+        if ( other.name == 'neq' ) {
+            return !isEqual(this.value, other.value)
+        } else {
+            return isSameEquality.call(this, other);
+        }
     });
-    Filter.define('eq', function (value, expected) {
-        return value == expected;
-    });
+
+
+    // Numeric orderings
+    function falseIfNumeric(other) {
+        if (/[lg]t(e)?/.test(other.name)) {
+            return false;
+        }
+    }
     Filter.define('lt', function (value, expected) {
         return value < expected;
+    }, function (other) {
+        if ( other.name == 'lt' ) {
+            return this.value >= other.value;
+        } else if ( other.name == 'lte' ) {
+            return this.value > other.value;
+        } else {
+            return falseIfNumeric(other);
+        }
+    }, function (other) {
+        if ( other.name.lastIndexOf('lt', 0) === 0 ) {
+            return this.value <= other.value;
+        } else {
+            return falseIfNumeric(other);
+        }
     }, 'gte');
+
     Filter.define('gt', function (value, expected) {
         return value > expected;
+    }, function (other) {
+        if ( other.name == 'gt' ) {
+            return this.value <= other.value;
+        } else if ( other.name == 'gte' ) {
+            return this.value < other.value;
+        } else {
+            return falseIfNumeric(other);
+        }
+    }, function (other) {
+        if ( other.name.lastIndexOf('gt', 0) === 0 ) {
+            return this.value >= other.value;
+        } else {
+            return falseIfNumeric(other);
+        }
     }, 'lte');
-    Filter.define('in', function (value, expected) {
+
+
+
+    // 'in' predicate
+    function isIn(value, expected) {
         return expected.indexOf(value) >= 0;
-    });
+    }
+    function isSuperSet(other) {
+        if ( other.name == 'eq' ) {
+            return isIn(other.value, this.value);
+        } else if ( other.name == 'in' ) {
+            return other.value.every(function (value) {
+                return isIn(value, this.value);
+            }, this);
+        }
+    }
+    function isSubSet(other) {
+
+        // Empty set
+        if ( !this.value.length ) {
+            return true;
+        }
+
+        if ( other.name == 'eq' ) {
+            // Singleton set - equal
+            return this.value.length === 1 && isEqual(this.value[0], other.value);
+        } else if ( other.name == 'neq' ) {
+            return !isIn(other.value, this.value);
+        } else if ( other.name == 'nin' ) {
+            return !other.value.some(function (value) {
+                return isIn(value, this.value);
+            }, this);
+        }
+    }
+    Filter.define('in', isIn, isSuperSet, isSubSet);
+
 
     Filter.Filterable = new coop.Class({
         filter: function (key, operator, value) {
@@ -201,8 +344,8 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
         },
         matches: function (item) {
             return this.spec.some(function (filter) {
-                return filter.matches(item);
-            })
+                return filter.matches(item, this.resource);
+            }, this)
         },
 
         withFilter: function (filter) {
@@ -220,6 +363,32 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
             return inverse;
         },
 
+
+        includes: function (other, converse) {
+        	// For a disjunction, if any disjunct includes the other,
+        	// we are good.
+        	if ( this.spec.some(function (filter) {
+        		return filter.includes(other);
+        	})) {
+        		return true;
+        	}
+
+        	if (!converse)
+        		return other.includedIn(this, true);
+        },
+        includedIn: function (other, converse) {
+        	// If each disjunct is included in the other,
+        	// we must be too.
+        	if ( this.spec.every(function (filter) {
+        		return filter.includedIn(other);
+        	})) {
+        		return true;
+        	}
+
+        	if (!converse)
+        		return other.includes(this, true);
+        },
+
         isEmpty: function () {
             return this.spec.length == 0;
         },
@@ -231,10 +400,12 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
             return this.spec.map(function (filter) { return '( ' + filter.toString() + ' )' }).join(' || ');
         }
     });
-    SubscriptionSpec.Disjunction.build = function(resource, alternatives) {
+    SubscriptionSpec.Disjunction.build = function(resource, alternatives, optimize) {
         var filter = new SubscriptionSpec.Disjunction(resource, []);
         alternatives.forEach(function (alt) {
-            filter = filter.or(alt);
+        	if ( !optimize || !filter.includes(alt) ) {
+            	filter = filter.or(alt);
+            }
         });
         return filter;
     }
@@ -242,8 +413,8 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
     SubscriptionSpec.Filters = new coop.Class([SubscriptionSpec], {
         matches: function (item) {
             return this.spec.every(function (filter) {
-                return filter.matches(item);
-            })
+                return filter.matches(item, this.resource);
+            }, this)
         },
 
         union: function (other) {
@@ -260,11 +431,66 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
             }, this));
         },
 
+        includes: function (other, converse) {
+        	// For a conjunction, if every filter includes the other
+        	// set, we must too.
+        	if ( this.spec.every(function (filter) {
+        		return filter.includes(other);
+        	})) {
+        		return true;
+        	}
+
+        	if (!converse)
+        		return other.includedIn(this, true);
+        },
+        includedIn: function (other, converse) {
+        	// If any conjunct is included in the other,
+        	// we must be too.
+        	if ( this.spec.some(function (filter) {
+        		return filter.includedIn(other);
+        	})) {
+        		return true;
+        	}
+
+        	if (!converse)
+        		return other.includes(this, true);
+        },
+
         toJSON: function () {
             return this.spec.length == 1 ? this.spec[0].toJSON() : { all: this.super() }
         },
         toString: function () {
-            return this.spec.map(function (filter) { return filter.toString() }).join(' && ');
+            if ( this.spec.length ) {
+                return this.spec.map(function (filter) { return filter.toString() }).join(' && ');
+            } else {
+                return "*";
+            }
+        }
+    });
+    
+
+    SubscriptionSpec.Decorator = SubscriptionSpec.derived({
+        matches: function (item) {
+            return this.spec.matches(item);
+        },
+
+        union: function (other) {
+            return this.decorate(this.spec.union(other))
+        },
+
+        withFilter: function (filter) {
+            return this.decorate(this.spec.withFilter(other))
+        },
+
+        inverse: function () {
+            return this.decorate(this.spec.inverse())
+        },
+
+        includes: function (other, converse) {
+            return this.spec.includes(other, converse);
+        },
+        includedIn: function (other, converse) {
+            return this.spec.includedIn(other, converse);
         }
     });
 
@@ -275,9 +501,10 @@ define('lib/subscriptionSpec',['coop', './subscribable', './filter'], function (
 
 
 
-define('lib/resource',['coop', './subscribable', './filter', './subscriptionSpec'], function (coop, Subscribable, Filter, SubscriptionSpec) {
+define('lib/resource',['coop', './subscribable', './filter', './subscriptionSpec', './extractor'],
+function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
 
-    var Resource = new coop.Class([coop.Options, Subscribable, Filter.Filterable], {
+    var Resource = new coop.Class([coop.Options, Extractor, Subscribable, Filter.Filterable], {
         options: {
             id: function (data) {
                 return data.id;
@@ -320,8 +547,10 @@ define('lib/resource',['coop', './subscribable', './filter', './subscriptionSpec
         },
         addSubscription: function (filter) {
             this.subscriptions.push(filter);
-            this.subscription = this.subscription.union(filter);
-            return this.refresh();
+            if ( !this.subscription.includes(filter) ) {
+                this.subscription = this.subscription.union(filter);
+                return this.refresh();
+            }
         },
         removeSubscription: function (filter) {
             var idx = this.subscriptions.indexOf(filter);
@@ -329,7 +558,7 @@ define('lib/resource',['coop', './subscribable', './filter', './subscriptionSpec
 
             // Build a new normal form subscription
             this.subscriptions.splice(idx, 1);
-            this.subscription = SubscriptionSpec.Disjunction.build(this, this.subscriptions);
+            this.subscription = SubscriptionSpec.Disjunction.build(this, this.subscriptions, true);
 
             return this.refresh();
         },
@@ -401,13 +630,91 @@ define('lib/resource',['coop', './subscribable', './filter', './subscriptionSpec
 
 
 
-define('sub-sync',['./lib/resource', './lib/filter', './lib/subscribable', './lib/subscriptionSpec'],
-function (Resource, Filter, Subscribable, SubscriptionSpec) {
+
+
+define('lib/sort',['coop', './subscribable', './filter', './subscriptionSpec', './extractor'],
+function (coop, Subscribable, Filter, SubscriptionSpec, Extractor) {
+
+	var Sort = new coop.Class([Extractor], {
+		compare: function (a,b, extractor) {
+			var va = this.valueFrom(a, extractor),
+				vb = this.valueFrom(b, extractor);
+			return va < vb ? -1 : va > vb ? 1 : 0;
+		}
+	})
+
+	Sort.ByCol = Sort.derived({
+		initialize: function (col) {
+			this.col = col;
+		},
+		
+		valueFrom: function (item, extractor) {
+			return (extractor || this).extract(this.col, item);
+		},
+		toJSON: function () {
+			return {
+				col: this.col
+			}
+		},
+		toString: function () {
+			return this.col
+		}
+	})
+
+	Sort.SortedSubscription = SubscriptionSpec.Decorator.derived({
+		initialize: function (sort, resource, spec) {
+			this.super_co(arguments, 1);
+
+			this.sort = sort;
+		},
+
+		getAll: function () {
+			var resource = this.resource, sort = this.sort;
+			return this.spec.getAll().slice(0).sort(function (a,b) {
+				return sort.compare(a, b, resource);
+			});
+		},
+
+		toJSON: function () {
+			return {
+				sort: this.sort.toJSON(),
+				values: this.spec.toJSON()
+			}
+		},
+
+		decorate: function (spec) {
+			return new Sort.SortedSubscription(this.sort, this.resource, spec);
+		},
+
+		toString: function () {
+			return "[ sort " + this.sort.toString() + " ]{ " + this.spec.toString() + " }"
+		}
+	})
+
+	SubscriptionSpec.implement({
+		sort: function (sort) {
+			if ( !Sort.isinstance(sort) ) {
+				sort = new Sort.ByCol(sort);
+			}
+
+			var spec = Sort.SortedSubscription.isinstance(this) ? this.spec : this;
+			return new Sort.SortedSubscription(sort, this.resource, spec);
+		}
+	})
+
+	return Sort;
+})
+;
+
+
+define('sub-sync',['./lib/resource', './lib/filter', './lib/subscribable', './lib/subscriptionSpec', './lib/sort'],
+function (Resource, Filter, Subscribable, SubscriptionSpec, Sort) {
 	return {
 		Filter: Filter,
 		Subscribable: Subscribable,
 		SubscriptionSpec: SubscriptionSpec,
-		Resource: Resource
+		Resource: Resource,
+		Sort: Sort
 	}
 });
 	
