@@ -12,13 +12,11 @@ describe('Filter', function() {
 		return filter;
 	});
 
-	describe('#valueFrom', function(){
+	describe('#valueFrom(item, [extractor])', function(){
 		it('should select property from object', function () {
 			f.valueFrom({ x: 123 }).should.equal(123);
 		})
-	});
 
-	describe('#valueFrom', function(){
 		it('should use custom extractor', function () {
 			f.valueFrom({ x: 1 }, {
 				extract: function (key, item) {
